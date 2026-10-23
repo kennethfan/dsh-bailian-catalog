@@ -4,7 +4,7 @@
  * 手写 ModuleLoader bundle：无构建步骤，只依赖 shell 已提供的 react。
  * 贡献一个设置页 section（settings.section，id `bailian-catalog`），
  * 从同源 `/api/bailian-catalog/list` 读取百炼全量模型并展示：
- * 搜索、厂商分组折叠、一键复制模型 ID、手动刷新。
+ * 搜索、按模型家族分组折叠、一键复制模型 ID、手动刷新。
  *
  * 颜色全部取自主题变量，明暗主题切换无需额外处理。
  */
@@ -64,13 +64,6 @@ window.__ModuleLoader__.load({
 .bac-add-on { color: var(--dsw-alias-state-success-primary, #3fb950); border-color: transparent; }
 .bac-note { font-size: 12px; color: var(--dsw-alias-state-success-primary, #3fb950); }
 `
-
-    /** 从模型 id 推导厂商分组，例如 `kimi/kimi-k2.8` → `kimi`。 */
-    function vendorOf(id) {
-      const text = String(id)
-      const slash = text.indexOf('/')
-      return slash > 0 ? text.slice(0, slash) : '其他'
-    }
 
     /** 千分位数字，便于阅读 token 量。 */
     function formatNum(value) {
@@ -152,17 +145,18 @@ window.__ModuleLoader__.load({
 
       const keyword = query.trim().toLowerCase()
       const filtered = keyword ? models.filter(model => model.id.toLowerCase().includes(keyword)) : models
+      const familyCount = new Set(models.map(model => model.family || '其他')).size
 
-      // 按厂商分组，保持首次出现顺序；「其他」永远排最后。
+      // 按模型家族分组，保持首次出现顺序；「其他」永远排最后。
       const order = []
-      const byVendor = new Map()
+      const byFamily = new Map()
       for (const model of filtered) {
-        const vendor = model.vendor || vendorOf(model.id)
-        if (!byVendor.has(vendor)) {
-          byVendor.set(vendor, [])
-          order.push(vendor)
+        const family = model.family || '其他'
+        if (!byFamily.has(family)) {
+          byFamily.set(family, [])
+          order.push(family)
         }
-        byVendor.get(vendor).push(model)
+        byFamily.get(family).push(model)
       }
       order.sort((a, b) => (a === '其他' ? 1 : b === '其他' ? -1 : a.localeCompare(b)))
 
@@ -230,7 +224,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'bac-sub' },
             loading && models.length === 0
               ? '正在读取百炼模型清单…'
-              : '共 ' + models.length + ' 个模型' +
+              : '共 ' + models.length + ' 个模型 · ' + familyCount + ' 个家族' +
                 (baseURL ? ' · ' + baseURL : '') +
                 (fetchedAt ? ' · ' + new Date(fetchedAt).toLocaleTimeString() : ''),
           ),
@@ -287,16 +281,16 @@ window.__ModuleLoader__.load({
       } else if (filtered.length === 0) {
         body = h('div', { className: 'bac-empty' }, keyword ? '没有匹配「' + query + '」的模型' : '端点未返回任何模型')
       } else {
-        body = h('div', null, order.map(vendor => {
-          const rows = byVendor.get(vendor)
-          const open = !collapsed[vendor]
-          return h('div', { className: 'bac-group', key: vendor },
+        body = h('div', null, order.map(family => {
+          const rows = byFamily.get(family)
+          const open = !collapsed[family]
+          return h('div', { className: 'bac-group', key: family },
             h('button', {
               className: 'bac-ghead',
-              onClick: () => setCollapsed(current => ({ ...current, [vendor]: !current[vendor] })),
+              onClick: () => setCollapsed(current => ({ ...current, [family]: !current[family] })),
             },
               h('span', { className: 'bac-caret' }, open ? '▼' : '▶'),
-              h('span', { className: 'bac-gname' }, vendor),
+              h('span', { className: 'bac-gname' }, family),
               h('span', { className: 'bac-count' }, String(rows.length)),
             ),
             open

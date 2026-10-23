@@ -27,11 +27,43 @@ const CRED_REF = 'BAILIAN_API_KEY'
 /** llm-pi-ai 注册模型发现所用的 settings 命名空间。 */
 const SETTINGS_NS = 'llm-pi-ai'
 
-/** 从模型 id 推导厂商分组，例如 `kimi/kimi-k2.8` → `kimi`，无前缀归入「其他」。 */
+/**
+ * 模型家族规则表（有序，先匹配先生效）。
+ * 端点上很多模型 id 没有 `owner/` 前缀（作者端点 178 个里 105 个如此），
+ * 仅按前缀分组会把它们全挤进「其他」，因此按 id 特征归类到实际家族。
+ */
+const FAMILY_RULES = [
+  [/^(cmaas-)?qwen/i, '通义千问'],
+  [/^glm/i, '智谱'],
+  [/^kimi/i, 'Kimi'],
+  [/^deepseek/i, 'DeepSeek'],
+  [/^minimax/i, 'MiniMax'],
+  [/^wan/i, '通义万相'],
+  [/^z-image/i, 'Z-Image'],
+  [/^step/i, '阶跃星辰'],
+  [/^mimo/i, '小米'],
+  [/^unisound/i, 'Unisound'],
+  [/^fun-asr/i, 'FunASR'],
+  [/^tongyi/i, '通义'],
+]
+
+/** 从模型 id 推导所属命名空间，例如 `kimi/kimi-k2.8` → `kimi`，无前缀归入「其他」。 */
 function vendorOf(id) {
   const text = String(id)
   const slash = text.indexOf('/')
   return slash > 0 ? text.slice(0, slash) : '其他'
+}
+
+/**
+ * 从模型 id 推导模型家族，例如 `qwen3.8-max` → `通义千问`、`vanchin/deepseek-v3` → `DeepSeek`。
+ * 先按完整 id 匹配（覆盖 `MiniMax/speech-02-hd` 这类叶子名不含厂商标识的），再按叶子名匹配。
+ */
+function familyOf(id) {
+  const text = String(id)
+  const leaf = text.split('/').pop()
+  for (const [pattern, family] of FAMILY_RULES) if (pattern.test(text)) return family
+  for (const [pattern, family] of FAMILY_RULES) if (pattern.test(leaf)) return family
+  return '其他'
 }
 
 /**
@@ -60,10 +92,18 @@ export function apply(ctx, config) {
       id: model.id,
       name: model.name || model.id,
       vendor: vendorOf(model.id),
+      family: familyOf(model.id),
       contextWindow: typeof model.contextWindow === 'number' ? model.contextWindow : null,
       maxTokens: typeof model.maxTokens === 'number' ? model.maxTokens : null,
     }))
     models.sort((a, b) => a.id.localeCompare(b.id))
+
+    // 家族按成员数降序排列，数量相同时按名称排序，便于面板稳定分组。
+    const counts = new Map()
+    for (const model of models) counts.set(model.family, (counts.get(model.family) || 0) + 1)
+    const families = [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 
     // 附带当前 provider 配置里已有的模型 id，供面板标记「已加入」。
     let configured = []
@@ -73,7 +113,7 @@ export function apply(ctx, config) {
       // 配置不可读时忽略，不影响清单展示
     }
 
-    return { models, total: models.length, baseURL, fetchedAt: Date.now(), configured }
+    return { models, total: models.length, families, baseURL, fetchedAt: Date.now(), configured }
   }
 
   // 全局 Agent 工具：注册在根上下文，所有会话都能调用，用于查询百炼模型清单。
@@ -87,7 +127,7 @@ export function apply(ctx, config) {
           description:
             'List the models an Alibaba Bailian (DashScope) OpenAI-compatible endpoint advertises. ' +
             'Use when the user asks which models Bailian offers, whether a model id exists, or needs ' +
-            'a valid model id before configuring one. Returns ids grouped by vendor.',
+            'a valid model id before configuring one. Returns ids grouped by model family and namespace.',
           parameters: {
             type: 'object',
             properties: {
@@ -95,9 +135,15 @@ export function apply(ctx, config) {
                 type: 'string',
                 description: 'Optional case-insensitive substring filter applied to model ids, e.g. "qwen" or "deepseek".',
               },
+              family: {
+                type: 'string',
+                description:
+                  'Optional exact model-family filter, e.g. "通义千问", "DeepSeek", "智谱", "Kimi", "MiniMax". Unrecognised ids use "其他".',
+              },
               vendor: {
                 type: 'string',
-                description: 'Optional exact vendor prefix filter, e.g. "kimi", "ZHIPU", "MiniMax". Models without a prefix use "其他".',
+                description:
+                  'Optional exact namespace filter taken from the `owner/` prefix of the id, e.g. "kimi", "ZHIPU", "MiniMax". Ids without a prefix use "其他".',
               },
             },
             additionalProperties: false,
@@ -109,15 +155,23 @@ export function apply(ctx, config) {
           async execute(args) {
             const payload = await listModels()
             const keyword = args && typeof args.query === 'string' ? args.query.trim().toLowerCase() : ''
+            const family = args && typeof args.family === 'string' ? args.family.trim() : ''
             const vendor = args && typeof args.vendor === 'string' ? args.vendor.trim() : ''
             let models = payload.models
             if (keyword) models = models.filter((model) => model.id.toLowerCase().includes(keyword))
+            if (family) models = models.filter((model) => model.family === family)
             if (vendor) models = models.filter((model) => model.vendor === vendor)
+            const countBy = (key) => {
+              const map = new Map()
+              for (const model of models) map.set(model[key], (map.get(model[key]) || 0) + 1)
+              return [...map.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+            }
             return {
               total: models.length,
               endpoint: payload.baseURL,
-              vendors: Array.from(new Set(models.map((model) => model.vendor))).sort(),
-              models: models.map((model) => ({ id: model.id, vendor: model.vendor })),
+              families: countBy('family'),
+              namespaces: countBy('vendor'),
+              models: models.map((model) => ({ id: model.id, family: model.family, vendor: model.vendor })),
             }
           },
         }),

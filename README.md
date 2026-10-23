@@ -6,10 +6,14 @@ Lists every **Alibaba Bailian (DashScope / Model Studio)** model the configured 
 
 ## What it does
 
-1. **Settings panel**: total model count, probed endpoint, refresh time, search, per-vendor collapsing, and one-click copy of a model id.
+1. **Settings panel**: total model count, probed endpoint, refresh time, search, per-family collapsing, and one-click copy of a model id.
 2. **Add to config**: every row has an *Add* button that writes the model into `llm-pi-ai`'s `providers.bailian.models`, after which the model appears in the model picker. Clicking it again removes the model.
 3. **Current session quota**: the context window, tokens used, remaining budget and a usage bar for the model the active session is running on.
-4. **Agent tool**: `bailian_list_models`, callable from any session, with a `query` substring filter and an exact `vendor` filter.
+4. **Agent tool**: `bailian_list_models`, callable from any session, with a `query` substring filter, an exact `family` filter and an exact `vendor` (namespace) filter.
+
+## Grouping
+
+Many endpoints advertise ids without an `owner/` prefix — 105 of the 178 on the author's endpoint — so grouping by that prefix alone would leave most models in a single bucket. Models are grouped by **family** instead, derived from id patterns (`qwen*` → 通义千问, `glm*` → 智谱, `kimi*` → Kimi, `deepseek*` → DeepSeek, `minimax*` → MiniMax, `wan*` → 通义万相, and so on), with the `owner/` prefix kept as a secondary *namespace* value. On the author's endpoint that resolves 175 of 178 models across 12 families.
 
 ## How it works
 

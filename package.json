@@ -1,0 +1,45 @@
+{
+  "name": "dsh-bailian-catalog",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browse the full Alibaba Bailian (DashScope / Model Studio) model catalog in the DSH settings page, and add or remove individual models in the Bailian provider route. Also shows the current session's context quota.",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "bailian",
+    "dashscope",
+    "model-studio",
+    "alibaba-cloud",
+    "model-catalog"
+  ],
+  "author": "kennethfan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kennethfan/dsh-bailian-catalog.git"
+  },
+  "homepage": "https://github.com/kennethfan/dsh-bailian-catalog#readme",
+  "license": "MIT"
+}

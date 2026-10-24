@@ -8,7 +8,8 @@
  * 安全约定：
  *   - 密钥只在 Host 内存中使用，绝不写入响应或日志；
  *   - 密钥来源是 credentials 服务（回退环境变量由该服务负责）；
- *   - 接口只读，不改动任何配置。
+ *   - 读取接口（list/usage）只读；写入接口（add/remove）仅改动 llm-pi-ai
+ *     的 providers.bailian.models，且经 settings.mutate 的结构化写入完成。
  *
  * @module index.js
  */
@@ -28,11 +29,12 @@ const CRED_REF = 'BAILIAN_API_KEY'
 const SETTINGS_NS = 'llm-pi-ai'
 
 /**
- * 模型家族规则表（有序，先匹配先生效）。
+ * 内置模型家族规则表（有序，先匹配先生效）。
  * 端点上很多模型 id 没有 `owner/` 前缀（作者端点 178 个里 105 个如此），
  * 仅按前缀分组会把它们全挤进「其他」，因此按 id 特征归类到实际家族。
+ * 可用 config.families 追加自定义规则，自定义规则先于本表匹配。
  */
-const FAMILY_RULES = [
+const DEFAULT_FAMILY_RULES = [
   [/^(cmaas-)?qwen/i, '通义千问'],
   [/^glm/i, '智谱'],
   [/^kimi/i, 'Kimi'],
@@ -47,31 +49,70 @@ const FAMILY_RULES = [
   [/^tongyi/i, '通义'],
 ]
 
+/** 无法归入任何家族时的兜底分组名。 */
+const OTHER_FAMILY = '其他'
+
 /** 从模型 id 推导所属命名空间，例如 `kimi/kimi-k2.8` → `kimi`，无前缀归入「其他」。 */
 function vendorOf(id) {
   const text = String(id)
   const slash = text.indexOf('/')
-  return slash > 0 ? text.slice(0, slash) : '其他'
+  return slash > 0 ? text.slice(0, slash) : OTHER_FAMILY
 }
 
 /**
- * 从模型 id 推导模型家族，例如 `qwen3.8-max` → `通义千问`、`vanchin/deepseek-v3` → `DeepSeek`。
- * 先按完整 id 匹配（覆盖 `MiniMax/speech-02-hd` 这类叶子名不含厂商标识的），再按叶子名匹配。
+ * 解析 config.families 里的自定义规则。
+ * 形如 `[{ pattern: '^my-model', family: '自制' }]`；pattern 按不区分大小写的正则解释。
+ * 非法条目只产生告警并跳过，绝不抛错——配置写错不应让插件失效。
+ *
+ * @param {unknown} raw
+ * @returns {{ rules: Array<[RegExp, string]>, warnings: string[] }}
  */
-function familyOf(id) {
-  const text = String(id)
-  const leaf = text.split('/').pop()
-  for (const [pattern, family] of FAMILY_RULES) if (pattern.test(text)) return family
-  for (const [pattern, family] of FAMILY_RULES) if (pattern.test(leaf)) return family
-  return '其他'
+function parseFamilyRules(raw) {
+  const rules = []
+  const warnings = []
+  if (raw === undefined || raw === null) return { rules, warnings }
+  if (!Array.isArray(raw)) {
+    warnings.push('config.families 必须是数组，当前已忽略')
+    return { rules, warnings }
+  }
+  raw.forEach((item, index) => {
+    const pattern = item && typeof item.pattern === 'string' ? item.pattern.trim() : ''
+    const family = item && typeof item.family === 'string' ? item.family.trim() : ''
+    if (!pattern || !family) {
+      warnings.push(`config.families[${index}] 需要同时提供 pattern 与 family，已跳过`)
+      return
+    }
+    try {
+      rules.push([new RegExp(pattern, 'i'), family])
+    } catch (err) {
+      warnings.push(`config.families[${index}] 的正则无效（${pattern}），已跳过`)
+    }
+  })
+  return { rules, warnings }
 }
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ baseURL?: string }} [config]
+ * @param {{ baseURL?: string, families?: Array<{ pattern: string, family: string }> }} [config]
  */
 export function apply(ctx, config) {
   const baseURL = (config && typeof config.baseURL === 'string' && config.baseURL) || DEFAULT_BASE_URL
+
+  // 自定义规则先匹配，内置规则兜底：这样用户能把某个模型从内置家族里改归别处。
+  const { rules: customRules, warnings: familyWarnings } = parseFamilyRules(config && config.families)
+  const familyRules = [...customRules, ...DEFAULT_FAMILY_RULES]
+
+  /**
+   * 从模型 id 推导模型家族，例如 `qwen3.8-max` → `通义千问`、`vanchin/deepseek-v3` → `DeepSeek`。
+   * 先按完整 id 匹配（覆盖 `MiniMax/speech-02-hd` 这类叶子名不含厂商标识的），再按叶子名匹配。
+   */
+  function familyOf(id) {
+    const text = String(id)
+    const leaf = text.split('/').pop()
+    for (const [pattern, family] of familyRules) if (pattern.test(text)) return family
+    for (const [pattern, family] of familyRules) if (pattern.test(leaf)) return family
+    return OTHER_FAMILY
+  }
 
   /** 拉取百炼全量模型；失败时抛错，由路由转成 JSON 错误。 */
   async function listModels() {
@@ -113,7 +154,15 @@ export function apply(ctx, config) {
       // 配置不可读时忽略，不影响清单展示
     }
 
-    return { models, total: models.length, families, baseURL, fetchedAt: Date.now(), configured }
+    return {
+      models,
+      total: models.length,
+      families,
+      baseURL,
+      fetchedAt: Date.now(),
+      configured,
+      ...(familyWarnings.length ? { familyWarnings } : {}),
+    }
   }
 
   // 全局 Agent 工具：注册在根上下文，所有会话都能调用，用于查询百炼模型清单。

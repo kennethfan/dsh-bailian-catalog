@@ -63,6 +63,7 @@ window.__ModuleLoader__.load({
 .bac-add:disabled { opacity: 0.55; cursor: default; }
 .bac-add-on { color: var(--dsw-alias-state-success-primary, #3fb950); border-color: transparent; }
 .bac-note { font-size: 12px; color: var(--dsw-alias-state-success-primary, #3fb950); }
+.bac-warn { padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-state-warn-primary, #d9a514); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 35%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 8%, transparent); }
 `
 
     /** 千分位数字，便于阅读 token 量。 */
@@ -85,6 +86,7 @@ window.__ModuleLoader__.load({
       const [added, setAdded] = useState({})
       const [adding, setAdding] = useState({})
       const [addNote, setAddNote] = useState('')
+      const [familyWarnings, setFamilyWarnings] = useState([])
 
       /** 读取同源 JSON 接口；Host 半身负责凭证与鉴权。 */
       async function load() {
@@ -103,6 +105,7 @@ window.__ModuleLoader__.load({
             const configured = {}
             for (const id of Array.isArray(data.configured) ? data.configured : []) configured[id] = true
             setAdded(configured)
+            setFamilyWarnings(Array.isArray(data.familyWarnings) ? data.familyWarnings : [])
           }
         } catch (err) {
           setError('无法连接插件后端：' + String((err && err.message) || err))
@@ -319,6 +322,9 @@ window.__ModuleLoader__.load({
       }
 
       return h('div', { className: 'bac-wrap' }, header, renderQuota(), search,
+        familyWarnings.length
+          ? h('div', { className: 'bac-warn' }, 'config.families 配置有误：' + familyWarnings.join('；'))
+          : null,
         addNote ? h('div', { className: 'bac-note' }, addNote) : null,
         body)
     }

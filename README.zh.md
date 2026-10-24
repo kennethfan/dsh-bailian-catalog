@@ -75,6 +75,25 @@ Host 半身需要重启 `dsh` 进程后路由才存在；浏览器半身刷新�
 
 默认端点取 profile 中 `llm-pi-ai` 配置的百炼 MaaS 网关；公共端点亦可（实测两者返回一致）。
 
+### 自定义家族规则
+
+`families` 用于追加自定义规则。自定义规则**先于内置规则匹配**，因此也能把某个模型从内置家族里改归别处：
+
+```yaml
+- id: bailian-catalog
+  name: 'dsh-bailian-catalog'
+  config:
+    families:
+      - pattern: '^gui-plus$'   # 不区分大小写的正则
+        family: GUI
+      - pattern: '^sre-gpu'
+        family: 运维
+```
+
+与内置表一致：先拿完整 id 匹配，再拿叶子名（`/` 之后的部分）匹配。
+
+配置写错不会让插件失效——正则非法、缺 `pattern` 或 `family`、`families` 不是数组，都会跳过并在设置页显示告警，内置规则照常工作。
+
 ## 已知边界
 
 - 端点返回的是**当前 API Key 可用**的模型，不是百炼官网的全量目录（作者端点为 178 个）。

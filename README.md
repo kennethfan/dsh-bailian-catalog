@@ -75,6 +75,25 @@ The `cordis.patch.yml` row can override the probed endpoint:
 
 The default is the Bailian MaaS gateway configured for `llm-pi-ai` in the profile; the public endpoint works too (both returned identical bodies when tested).
 
+### Custom family rules
+
+`families` adds your own rules to the family table. They are matched **before** the built-in rules, so a rule can also reclassify something a built-in rule would otherwise claim:
+
+```yaml
+- id: bailian-catalog
+  name: 'dsh-bailian-catalog'
+  config:
+    families:
+      - pattern: '^gui-plus$'   # case-insensitive regular expression
+        family: GUI
+      - pattern: '^sre-gpu'
+        family: 运维
+```
+
+A rule is tested against the full model id first and against the leaf name (the part after `/`) second, exactly like the built-in table.
+
+Invalid input is skipped rather than fatal — a bad regular expression, a missing `pattern` or `family`, or a `families` value that is not an array each produce a warning that the settings panel shows, and the built-in rules keep working.
+
 ## Known limits
 
 - The endpoint returns the models **the current API key can use**, not Bailian's full public catalog (178 on the author's endpoint).

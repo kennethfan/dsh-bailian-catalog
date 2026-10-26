@@ -194,27 +194,39 @@ export function apply(ctx, config) {
       // 非 JSON 响应（网关错误页等）按原文归类
     }
     const error = payload && payload.error ? payload.error : null
-    const code = error && typeof error.code === 'string' ? error.code : ''
+    // 有些错误把 code/message 放在顶层，而不是 error 对象里。
+    const flatCode = payload && typeof payload.code === 'string' ? payload.code : ''
+    const flatMessage = payload && typeof payload.message === 'string' ? payload.message : ''
+    const code = (error && typeof error.code === 'string' ? error.code : '') || flatCode
     const type = error && typeof error.type === 'string' ? error.type : ''
-    const upstreamMessage = (error && (error.message || error.code)) || ''
+    const upstreamMessage = (error && (error.message || error.code)) || flatMessage || flatCode || ''
+    const haystack = [code, type, upstreamMessage].join(' ')
 
     let state = 'ok'
     let message = '可调用'
     if (status >= 200 && status < 300 && error === null) {
       state = 'ok'
       message = '可调用'
-    } else if (/Unpurchased|AccessDenied/i.test(code) || /Unpurchased/i.test(type)) {
+    } else if (/Unpurchased|AccessDenied/i.test(haystack)) {
       state = 'unpurchased'
       message = '未开通该模型（空间未购买或额度用尽）'
-    } else if (status === 401 || /invalid.*api.?key|unauthorized|AuthenticationError/i.test(code + ' ' + type)) {
+    } else if (status === 401 || /invalid.*api.?key|unauthorized|AuthenticationError/i.test(haystack)) {
       state = 'unauthorized'
       message = '鉴权失败（Key 无效或已过期）'
-    } else if (status === 404 || /model.*not.*found|NotFound/i.test(code + ' ' + type)) {
+    } else if (/Unsupported model|model.*not.*found|model_not_found|NotFound/i.test(haystack)) {
       state = 'not-found'
-      message = '模型不存在'
-    } else if (status === 429 || /rate.?limit|Throttling/i.test(code + ' ' + type)) {
+      message = '该模型不支持此接口（可能是嵌入 / 重排 / 语音等非对话模型）'
+    } else if (status === 429 || /rate.?limit|Throttling/i.test(haystack)) {
       state = 'rate-limited'
       message = '触发限流，稍后重试'
+    } else if (status === 400 && /InvalidParameter|Field required|Input should be/i.test(haystack)) {
+      // 参数校验失败说明路由是通的，只是这个模型不吃 chat 的 messages 格式。
+      state = 'not-chat'
+      message = '非对话模型（嵌入 / 图像 / 语音 / 重排），不能用 chat 请求验证'
+    } else if (status === 400 && haystack.trim() === '') {
+      // 400 且响应体为空：上游连错误码都没给，多半是非对话模型拒绝了 chat 载荷。
+      state = 'not-chat'
+      message = '非对话模型（上游未返回错误详情，按 chat 载荷被拒处理）'
     } else {
       state = 'error'
       message = upstreamMessage || 'HTTP ' + status

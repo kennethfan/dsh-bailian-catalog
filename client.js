@@ -69,8 +69,8 @@ window.__ModuleLoader__.load({
 .bac-probe:disabled { opacity: 0.55; cursor: default; }
 .bac-probe-result { flex: none; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
 .bac-probe-ok { color: var(--dsw-alias-state-success-primary, #3fb950); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 40%, transparent); }
-.bac-probe-unpurchased, .bac-probe-unauthorized, .bac-probe-error, .bac-probe-not-found { color: var(--dsw-alias-state-error-primary, #ff6b6b); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ff6b6b) 40%, transparent); }
-.bac-probe-rate-limited, .bac-probe-timeout { color: var(--dsw-alias-state-warn-primary, #d9a514); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 40%, transparent); }
+.bac-probe-unpurchased, .bac-probe-unauthorized, .bac-probe-error { color: var(--dsw-alias-state-error-primary, #ff6b6b); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ff6b6b) 40%, transparent); }
+.bac-probe-rate-limited, .bac-probe-timeout, .bac-probe-not-found, .bac-probe-not-chat { color: var(--dsw-alias-label-secondary, #999); border-color: var(--dsw-alias-border-l1, #33343a); }
 `
 
     /** 千分位数字，便于阅读 token 量。 */
@@ -88,7 +88,9 @@ window.__ModuleLoader__.load({
         case 'unauthorized':
           return '鉴权失败'
         case 'not-found':
-          return '不存在'
+          return '不支持此接口'
+        case 'not-chat':
+          return '非对话模型'
         case 'rate-limited':
           return '限流'
         case 'timeout':

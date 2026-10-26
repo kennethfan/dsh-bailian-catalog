@@ -7,13 +7,34 @@ Lists every **Alibaba Bailian (DashScope / Model Studio)** model the configured 
 ## What it does
 
 1. **Settings panel**: total model count, probed endpoint, refresh time, search, per-family collapsing, and one-click copy of a model id.
-2. **Add to config**: every row has an *Add* button that writes the model into `llm-pi-ai`'s `providers.bailian.models`, after which the model appears in the model picker. Clicking it again removes the model.
-3. **Current session quota**: the context window, tokens used, remaining budget and a usage bar for the model the active session is running on.
-4. **Agent tool**: `bailian_list_models`, callable from any session, with a `query` substring filter, an exact `family` filter and an exact `vendor` (namespace) filter.
+2. **Add to config**: every row has an *Add* button that writes the model into `llm-pi-ai`'s `providers.bailian.models`, after which the model appears in the model picker. Clicking it again removes the model. The add is probed first — see [Availability probing](#availability-probing).
+3. **Availability probe**: a per-row *Probe* button that sends one minimal chat request and reports whether the model is actually callable, so an unopened model is not mistaken for a bad key.
+4. **Current session quota**: the context window, tokens used, remaining budget and a usage bar for the model the active session is running on.
+5. **Agent tool**: `bailian_list_models`, callable from any session, with a `query` substring filter, an exact `family` filter and an exact `vendor` (namespace) filter.
+
+## Availability probing
+
+A model listed by `/models` is not necessarily a model you may call. A Bailian workspace that has not opened a model answers `403 AccessDenied.Unpurchased`, and DSH surfaces every upstream 401/403 as **"invalid API key"** — which points at the key instead of at the entitlement. Probing settles it.
+
+`POST /api/bailian-catalog/probe` sends one `max_tokens: 1` chat request and classifies the answer:
+
+| State | Meaning |
+| --- | --- |
+| `ok` | Callable |
+| `unpurchased` | The workspace has not opened this model, or its quota is exhausted (`AccessDenied.Unpurchased`) |
+| `unauthorized` | The key is invalid or expired |
+| `not-found` | The model does not exist, or the OpenAI-compatible interface does not support it (embedding, rerank) |
+| `not-chat` | A non-chat model (embedding, image, speech) rejected the `messages` payload — the route is reachable, but a chat request cannot verify it |
+| `rate-limited` | Throttled; retry later |
+| `timeout` / `error` | No usable answer |
+
+`not-chat` is deliberately a neutral result rather than a failure: probing an image or embedding model with a chat request always returns `400`, which says nothing about whether the model is available.
+
+**Adding is guarded by the probe.** A model in a blocking state (`unpurchased`, `unauthorized`, `not-found`, `error`, `timeout`) is **not written** to the route, and the panel shows why. Writing an unusable model into the route is what turns one bad selection into a session that fails on every turn. `not-chat` models are allowed through, since a chat request cannot judge them, and the probe result is returned alongside the write.
 
 ## Grouping
 
-Many endpoints advertise ids without an `owner/` prefix — 105 of the 178 on the author's endpoint — so grouping by that prefix alone would leave most models in a single bucket. Models are grouped by **family** instead, derived from id patterns (`qwen*` → 通义千问, `glm*` → 智谱, `kimi*` → Kimi, `deepseek*` → DeepSeek, `minimax*` → MiniMax, `wan*` → 通义万相, and so on), with the `owner/` prefix kept as a secondary *namespace* value. On the author's endpoint that resolves 175 of 178 models across 12 families.
+Many endpoints advertise ids without an `owner/` prefix — roughly six in ten on the author's endpoint — so grouping by that prefix alone would leave most models in a single bucket. Models are grouped by **family** instead, derived from id patterns (`qwen*` → 通义千问, `glm*` → 智谱, `kimi*` → Kimi, `deepseek*` → DeepSeek, `minimax*` → MiniMax, `wan*` → 通义万相, and so on), with the `owner/` prefix kept as a secondary *namespace* value. On the author's endpoint nearly every model resolves to a real family; only `gui-plus` and two ops entries fall through to 其他.
 
 ## How it works
 
@@ -22,6 +43,8 @@ Many endpoints advertise ids without an `owner/` prefix — 105 of the 178 on th
   - Enumerates models through the official `llm.discoverModels()` path, which requests `GET {baseURL}/models` with `Authorization: Bearer`.
   - Quota: reads the most recently active live session, measures used tokens with `tokenMeter.measure()`, and takes the model and window from `session.requestContext()`, falling back to `llm.resolveModelInfo()` when the window is unknown.
   - Add/remove writes through `settings.mutate()`, the structured profile-patch write path, rather than editing YAML text.
+  - Probing posts one `max_tokens: 1` chat request with a hard timeout and classifies the answer; error code and message are read from both the `error` object and the payload top level, since this endpoint uses both shapes.
+  - Every route calls `connection.requestRejection` before doing any work.
 - **Browser half** (`client.js`)
   - A hand-written `ModuleLoader` bundle with **no build step**, depending only on the shell-provided `react`.
   - Registers a `settings.section` (id `bailian-catalog`, order 12) and renders from the same-origin endpoints.
@@ -30,10 +53,13 @@ Many endpoints advertise ids without an `owner/` prefix — 105 of the 178 on th
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/bailian-catalog/list` | Model list, plus `configured` (ids already in the route) |
+| `GET` | `/api/bailian-catalog/list` | Model list, plus `configured` (ids already in the route) and `families` |
 | `GET` | `/api/bailian-catalog/usage` | Active session's model, tokens used and context window |
-| `POST` | `/api/bailian-catalog/add` | `{ id }`, idempotent; returns `already` when present |
+| `POST` | `/api/bailian-catalog/probe` | `{ id }`, one minimal chat request, classified into the states above |
+| `POST` | `/api/bailian-catalog/add` | `{ id }`, probed first; returns `already`, `blocked`, or `added` |
 | `POST` | `/api/bailian-catalog/remove` | `{ id }`, removes it from the route |
+
+Every route asks `connection.requestRejection` first, so the Host/Origin fence and browser authentication gate callers before any model list or config write is reachable. A no-cookie request gets `401`; a cross-site `Origin` gets `403`.
 
 > The first `settings.mutate` write materializes schema defaults (`input: []`, `compat: { chatTemplateKwargs: {}, chatTemplateArgs: {} }`) into the patch. They are semantically inert, but they add a few lines to the file.
 
@@ -107,9 +133,11 @@ Invalid input is skipped rather than fatal — a bad regular expression, a missi
 
 ## Known limits
 
-- The endpoint returns the models **the current API key can use**, not Bailian's full public catalog (178 on the author's endpoint).
-- The endpoints are read-only; no inference is attempted, so the list reflects what the endpoint declares.
-- Reachable from localhost only (the web server binds 127.0.0.1); no extra remote authentication is added.
+- The endpoint returns the models **the current API key can use**, not Bailian's full public catalog (180 on the author's endpoint). Listing a model does not imply entitlement — probe it.
+- Probing costs one request per click. It is not run automatically for the whole list, since that would be hundreds of calls.
+- A chat request cannot judge embedding, image, speech or rerank models; they report `not-chat` and stay unverified.
+- Reads are safe; only add/remove write, and only to the configured provider's `models` list.
+- Reachable from localhost only (the web server binds 127.0.0.1); the route fence assumes that origin model.
 
 ## License
 

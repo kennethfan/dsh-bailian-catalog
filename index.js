@@ -433,6 +433,11 @@ export function apply(ctx, config) {
    * 把一个模型 id 追加进目标 provider 配置。
    * 走 settings 服务的结构化写入（profile 补丁），不直接改 YAML 文本。
    * 幂等：已存在则返回 already。回滚：'remove' 动作。
+   *
+   * 写入前先探测：把一个用不了的模型写进路由，用户一旦选中它，
+   * 整个会话都会报错（DSH 还会把未开通误报成「密钥无效」）。
+   * 因此探测不通过的模型拒绝写入。非对话模型（嵌入/图像/语音）无法用
+   * chat 请求验证，这类按「不阻止」处理，只是把结论如实带回去。
    */
   async function addModel(modelId) {
     const { settings, target, models } = readProviderModels()
@@ -443,13 +448,49 @@ export function apply(ctx, config) {
       return { added: false, already: true, model: id, total: models.length, provider: providerName }
     }
 
+    // 阻塞性状态：确定不可用，不写入。
+    const blockedStates = new Set(['unpurchased', 'unauthorized', 'not-found', 'error', 'timeout'])
+    let probe = null
+    try {
+      probe = await probeModel(id)
+    } catch (err) {
+      // 探测本身失败（例如凭证读不到）不静默放过，直接上报。
+      return {
+        added: false,
+        blocked: true,
+        model: id,
+        total: models.length,
+        provider: providerName,
+        reason: '探测失败：' + String((err && err.message) || err),
+      }
+    }
+
+    if (probe && blockedStates.has(probe.state)) {
+      return {
+        added: false,
+        blocked: true,
+        model: id,
+        total: models.length,
+        provider: providerName,
+        probe,
+        reason: probe.message,
+      }
+    }
+
     const next = models.concat([{ id, name: id }])
     await settings.mutate(
       String(target.ns),
       [{ op: 'set', path: ['providers', providerName, 'models'], value: next }],
       target.revision,
     )
-    return { added: true, model: id, total: next.length, provider: providerName }
+    return {
+      added: true,
+      model: id,
+      total: next.length,
+      provider: providerName,
+      // ok 之外的（not-chat / rate-limited）也如实回报，供面板提示。
+      ...(probe && probe.state !== 'ok' ? { probe } : {}),
+    }
   }
 
   /** 从目标 provider 配置中移除一个模型（加入的回滚路径）。 */

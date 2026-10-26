@@ -63,6 +63,7 @@ window.__ModuleLoader__.load({
 .bac-add:disabled { opacity: 0.55; cursor: default; }
 .bac-add-on { color: var(--dsw-alias-state-success-primary, #3fb950); border-color: transparent; }
 .bac-note { font-size: 12px; color: var(--dsw-alias-state-success-primary, #3fb950); }
+.bac-note-bad { color: var(--dsw-alias-state-error-primary, #ff6b6b); }
 .bac-warn { padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-state-warn-primary, #d9a514); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 35%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 8%, transparent); }
 .bac-probe { flex: none; background: transparent; border: 1px solid var(--dsw-alias-border-l1, #33343a); color: var(--dsw-alias-label-secondary, #999); cursor: pointer; font-size: 11px; padding: 2px 8px; border-radius: 5px; }
 .bac-probe:hover { border-color: var(--dsw-alias-brand-primary, #4f8cff); color: var(--dsw-alias-brand-primary, #4f8cff); }
@@ -115,6 +116,7 @@ window.__ModuleLoader__.load({
       const [added, setAdded] = useState({})
       const [adding, setAdding] = useState({})
       const [addNote, setAddNote] = useState('')
+      const [noteTone, setNoteTone] = useState('ok')
       const [familyWarnings, setFamilyWarnings] = useState([])
       const [probes, setProbes] = useState({})
       const [probing, setProbing] = useState({})
@@ -231,16 +233,24 @@ window.__ModuleLoader__.load({
           })
           const data = await res.json().catch(() => ({}))
           if (!res.ok || data.error) {
-            setAddNote('加入失败：' + (data.error || 'HTTP ' + res.status))
+            setNoteTone('bad'); setAddNote('加入失败：' + (data.error || 'HTTP ' + res.status))
           } else if (data.already) {
             setAdded(current => ({ ...current, [id]: true }))
-            setAddNote('该模型已在配置中')
+            setNoteTone('ok'); setAddNote('该模型已在配置中')
+          } else if (data.blocked) {
+            // 探测不通过：不写入，避免选到用不了的模型后整个会话报错。
+            setProbes(current => ({ ...current, [id]: data.probe || { state: 'error', message: data.reason } }))
+            setNoteTone('bad'); setAddNote('已阻止加入 ' + id + '：' + (data.reason || '探测未通过'))
           } else {
             setAdded(current => ({ ...current, [id]: true }))
-            setAddNote('已加入配置：' + id + '（共 ' + data.total + ' 个百炼模型）')
+            if (data.probe) setProbes(current => ({ ...current, [id]: data.probe }))
+            setNoteTone('ok'); setAddNote(
+              '已加入配置：' + id + '（共 ' + data.total + ' 个百炼模型）' +
+                (data.probe ? ' · 注意：' + data.probe.message : ''),
+            )
           }
         } catch (err) {
-          setAddNote('加入失败：' + String((err && err.message) || err))
+          setNoteTone('bad'); setAddNote('加入失败：' + String((err && err.message) || err))
         }
         setAdding(current => ({ ...current, [id]: false }))
       }
@@ -257,17 +267,17 @@ window.__ModuleLoader__.load({
           })
           const data = await res.json().catch(() => ({}))
           if (!res.ok || data.error) {
-            setAddNote('移除失败：' + (data.error || 'HTTP ' + res.status))
+            setNoteTone('bad'); setAddNote('移除失败：' + (data.error || 'HTTP ' + res.status))
           } else {
             setAdded(current => {
               const next = { ...current }
               delete next[id]
               return next
             })
-            setAddNote(data.missing ? '该模型不在配置中' : '已移出配置：' + id + '（剩余 ' + data.total + ' 个）')
+            setNoteTone('ok'); setAddNote(data.missing ? '该模型不在配置中' : '已移出配置：' + id + '（剩余 ' + data.total + ' 个）')
           }
         } catch (err) {
-          setAddNote('移除失败：' + String((err && err.message) || err))
+          setNoteTone('bad'); setAddNote('移除失败：' + String((err && err.message) || err))
         }
         setAdding(current => ({ ...current, [id]: false }))
       }
@@ -393,7 +403,7 @@ window.__ModuleLoader__.load({
         familyWarnings.length
           ? h('div', { className: 'bac-warn' }, 'config.families 配置有误：' + familyWarnings.join('；'))
           : null,
-        addNote ? h('div', { className: 'bac-note' }, addNote) : null,
+        addNote ? h('div', { className: 'bac-note' + (noteTone === 'bad' ? ' bac-note-bad' : '') }, addNote) : null,
         body)
     }
 

@@ -64,11 +64,38 @@ window.__ModuleLoader__.load({
 .bac-add-on { color: var(--dsw-alias-state-success-primary, #3fb950); border-color: transparent; }
 .bac-note { font-size: 12px; color: var(--dsw-alias-state-success-primary, #3fb950); }
 .bac-warn { padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-state-warn-primary, #d9a514); border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 35%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 8%, transparent); }
+.bac-probe { flex: none; background: transparent; border: 1px solid var(--dsw-alias-border-l1, #33343a); color: var(--dsw-alias-label-secondary, #999); cursor: pointer; font-size: 11px; padding: 2px 8px; border-radius: 5px; }
+.bac-probe:hover { border-color: var(--dsw-alias-brand-primary, #4f8cff); color: var(--dsw-alias-brand-primary, #4f8cff); }
+.bac-probe:disabled { opacity: 0.55; cursor: default; }
+.bac-probe-result { flex: none; font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
+.bac-probe-ok { color: var(--dsw-alias-state-success-primary, #3fb950); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 40%, transparent); }
+.bac-probe-unpurchased, .bac-probe-unauthorized, .bac-probe-error, .bac-probe-not-found { color: var(--dsw-alias-state-error-primary, #ff6b6b); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ff6b6b) 40%, transparent); }
+.bac-probe-rate-limited, .bac-probe-timeout { color: var(--dsw-alias-state-warn-primary, #d9a514); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d9a514) 40%, transparent); }
 `
 
     /** 千分位数字，便于阅读 token 量。 */
     function formatNum(value) {
       return Number(value).toLocaleString('en-US')
+    }
+
+    /** 探测状态 → 面板短标签。 */
+    function probeLabel(state) {
+      switch (state) {
+        case 'ok':
+          return '可调用'
+        case 'unpurchased':
+          return '未开通'
+        case 'unauthorized':
+          return '鉴权失败'
+        case 'not-found':
+          return '不存在'
+        case 'rate-limited':
+          return '限流'
+        case 'timeout':
+          return '超时'
+        default:
+          return '错误'
+      }
     }
 
     /** 设置页「百炼模型」面板。 */
@@ -87,6 +114,8 @@ window.__ModuleLoader__.load({
       const [adding, setAdding] = useState({})
       const [addNote, setAddNote] = useState('')
       const [familyWarnings, setFamilyWarnings] = useState([])
+      const [probes, setProbes] = useState({})
+      const [probing, setProbing] = useState({})
 
       /** 读取同源 JSON 接口；Host 半身负责凭证与鉴权。 */
       async function load() {
@@ -162,6 +191,31 @@ window.__ModuleLoader__.load({
         byFamily.get(family).push(model)
       }
       order.sort((a, b) => (a === '其他' ? 1 : b === '其他' ? -1 : a.localeCompare(b)))
+
+      /**
+       * 探测模型是否真的可调用：发一个 max_tokens=1 的最小请求。
+       * DSH 把上游 401/403 统一显示成「API 密钥无效」，
+       * 而「未购买该模型」也是 403，只有探测能区分两者。
+       */
+      async function probe(id) {
+        setProbing(current => ({ ...current, [id]: true }))
+        try {
+          const res = await fetch('/api/bailian-catalog/probe', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify({ id }),
+          })
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok || data.error) {
+            setProbes(current => ({ ...current, [id]: { state: 'error', message: data.error || 'HTTP ' + res.status } }))
+          } else {
+            setProbes(current => ({ ...current, [id]: data }))
+          }
+        } catch (err) {
+          setProbes(current => ({ ...current, [id]: { state: 'error', message: String((err && err.message) || err) } }))
+        }
+        setProbing(current => ({ ...current, [id]: false }))
+      }
 
       /** 加入百炼 provider 配置（写 profile 补丁）；成功后该模型可在模型选择器中选用。 */
       async function addToConfig(id) {
@@ -303,6 +357,18 @@ window.__ModuleLoader__.load({
                     model.contextWindow
                       ? h('span', { className: 'bac-meta' }, Math.round(model.contextWindow / 1000) + 'K')
                       : null,
+                    probes[model.id]
+                      ? h('span', {
+                          className: 'bac-probe-result bac-probe-' + (probes[model.id].state || 'error'),
+                          title: [probes[model.id].message, probes[model.id].upstreamMessage].filter(Boolean).join(' · '),
+                        }, probeLabel(probes[model.id].state))
+                      : null,
+                    h('button', {
+                      className: 'bac-probe',
+                      onClick: () => probe(model.id),
+                      disabled: !!probing[model.id],
+                      title: '发一个 max_tokens=1 的最小请求，确认该模型是否真的可调用',
+                    }, probing[model.id] ? '探测中…' : '探测'),
                     h('button', {
                       className: 'bac-add' + (added[model.id] ? ' bac-add-on' : ''),
                       onClick: () => (added[model.id] ? removeFromConfig(model.id) : addToConfig(model.id)),

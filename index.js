@@ -36,6 +36,9 @@ const DEFAULT_PROVIDER = 'bailian'
 /** llm-pi-ai 注册模型发现所用的 settings 命名空间。 */
 const SETTINGS_NS = 'llm-pi-ai'
 
+/** 单次可用性探测的超时（毫秒）：最小请求也不该让面板卡住。 */
+const PROBE_TIMEOUT_MS = 15000
+
 
 /**
  * 内置模型家族规则表（有序，先匹配先生效）。
@@ -126,6 +129,105 @@ export function apply(ctx, config) {
     for (const [pattern, family] of familyRules) if (pattern.test(text)) return family
     for (const [pattern, family] of familyRules) if (pattern.test(leaf)) return family
     return OTHER_FAMILY
+  }
+
+  /**
+   * 探测单个模型是否真的可调用。
+   *
+   * 发一个 `max_tokens: 1` 的最小 chat 请求，按上游返回分类：
+   *   - ok            可调用
+   *   - unpurchased   未开通 / 未购买（AccessDenied.Unpurchased）
+   *   - unauthorized  鉴权失败（Key 无效或过期）
+   *   - not-found     模型不存在
+   *   - rate-limited  触发限流
+   *   - error         其他错误
+   *
+   * 之所以需要它：DSH 会把上游 401/403 统一显示为「API 密钥无效」，
+   * 而「未购买模型」同样是 403，只看那句话无法区分。
+   *
+   * @param {string} modelId
+   */
+  async function probeModel(modelId) {
+    const id = String(modelId || '').trim()
+    if (!id) throw new Error('缺少模型 ID')
+
+    const hit = await ctx.credentials.resolve(credRef)
+    const apiKey = hit && typeof hit.value === 'string' ? hit.value : undefined
+    if (!apiKey) throw new Error('凭证库中未找到 ' + credRef)
+
+    const url = baseURL.replace(/\/+$/, '') + '/chat/completions'
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
+    let status = 0
+    let text = ''
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + apiKey, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: id,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+        signal: controller.signal,
+      })
+      status = response.status
+      text = await response.text()
+    } catch (err) {
+      clearTimeout(timer)
+      const aborted = err && err.name === 'AbortError'
+      return {
+        model: id,
+        state: aborted ? 'timeout' : 'error',
+        httpStatus: 0,
+        message: aborted ? '探测超时（' + PROBE_TIMEOUT_MS + 'ms）' : String((err && err.message) || err),
+        probedAt: Date.now(),
+      }
+    }
+    clearTimeout(timer)
+
+    let payload = null
+    try {
+      payload = JSON.parse(text)
+    } catch (err) {
+      // 非 JSON 响应（网关错误页等）按原文归类
+    }
+    const error = payload && payload.error ? payload.error : null
+    const code = error && typeof error.code === 'string' ? error.code : ''
+    const type = error && typeof error.type === 'string' ? error.type : ''
+    const upstreamMessage = (error && (error.message || error.code)) || ''
+
+    let state = 'ok'
+    let message = '可调用'
+    if (status >= 200 && status < 300 && error === null) {
+      state = 'ok'
+      message = '可调用'
+    } else if (/Unpurchased|AccessDenied/i.test(code) || /Unpurchased/i.test(type)) {
+      state = 'unpurchased'
+      message = '未开通该模型（空间未购买或额度用尽）'
+    } else if (status === 401 || /invalid.*api.?key|unauthorized|AuthenticationError/i.test(code + ' ' + type)) {
+      state = 'unauthorized'
+      message = '鉴权失败（Key 无效或已过期）'
+    } else if (status === 404 || /model.*not.*found|NotFound/i.test(code + ' ' + type)) {
+      state = 'not-found'
+      message = '模型不存在'
+    } else if (status === 429 || /rate.?limit|Throttling/i.test(code + ' ' + type)) {
+      state = 'rate-limited'
+      message = '触发限流，稍后重试'
+    } else {
+      state = 'error'
+      message = upstreamMessage || 'HTTP ' + status
+    }
+
+    return {
+      model: id,
+      state,
+      httpStatus: status,
+      message,
+      ...(upstreamMessage && state !== 'ok' ? { upstreamMessage } : {}),
+      probedAt: Date.now(),
+    }
   }
 
   /** 拉取百炼全量模型；失败时抛错，由路由转成 JSON 错误。 */
@@ -451,6 +553,26 @@ export function apply(ctx, config) {
           },
         }),
       'bailian-catalog: remove model route',
+    )
+    scoped.effect(
+      () =>
+        server.register({
+          kind: 'exact',
+          path: '/api/bailian-catalog/probe',
+          handler: async (req, res) => {
+            if (rejected(req, res)) return
+            if (String(req.method || 'GET').toUpperCase() !== 'POST') {
+              sendJson(res, 405, { error: 'method not allowed' })
+              return
+            }
+            try {
+              sendJson(res, 200, await probeModel((await readJsonBody(req)).id))
+            } catch (err) {
+              sendJson(res, 500, { error: String((err && err.message) || err) })
+            }
+          },
+        }),
+      'bailian-catalog: probe route',
     )
   })
 }

@@ -61,19 +61,30 @@ dsh plugin --profile <profile> add link:/path/to/dsh-bailian-catalog
 
 Host 半身需要重启 `dsh` 进程后路由才存在；浏览器半身刷新页面即可。
 
+## 前置条件
+
+需要你自己的百炼（DashScope / Model Studio）API Key；若使用专属百炼空间，还需要该空间的 MaaS 网关地址。本插件**不附带任何凭证**，也**不指向任何个人空间**：默认端点是公共 DashScope 兼容端点。
+
 ## 配置
 
-`cordis.patch.yml` 中的行可覆盖探测端点：
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `baseURL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 要枚举的端点。使用专属百炼空间时改为该空间的 MaaS 网关。 |
+| `provider` | `bailian` | add/remove 写入的 `llm-pi-ai` provider 键名。 |
+| `apiKeyEnv` | `BAILIAN_API_KEY` | 经 `credentials` 服务解析的凭证引用名。 |
+| `families` | `[]` | 追加的家族规则（见下）。 |
 
 ```yaml
 - insert:
     - id: bailian-catalog
       name: 'dsh-bailian-catalog'
       config:
-        baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
+        baseURL: https://llm-<你的空间>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+        provider: bailian
+        apiKeyEnv: BAILIAN_API_KEY
 ```
 
-默认端点取 profile 中 `llm-pi-ai` 配置的百炼 MaaS 网关；公共端点亦可（实测两者返回一致）。
+空间网关与公共端点的响应结构一致，区别只在于网关按你的 Key 返回其可用的模型。
 
 ### 自定义家族规则
 

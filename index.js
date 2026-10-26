@@ -1,15 +1,20 @@
 /**
  * dsh-bailian-catalog — Host 半身。
  *
- * 职责：提供 GET /api/bailian-catalog/list，读取 DSH 凭证库中的
- * BAILIAN_API_KEY，通过官方 `ctx.llm.discoverModels(...)` 探测百炼
- * （OpenAI 兼容端点）的 /models 列表，以 JSON 返回给设置页。
+ * 职责：提供 GET /api/bailian-catalog/list，读取 DSH 凭证库中的百炼密钥，
+ * 通过官方 `ctx.llm.discoverModels(...)` 探测（OpenAI 兼容端点）的 /models
+ * 列表，以 JSON 返回给设置页。
  *
  * 安全约定：
  *   - 密钥只在 Host 内存中使用，绝不写入响应或日志；
  *   - 密钥来源是 credentials 服务（回退环境变量由该服务负责）；
- *   - 读取接口（list/usage）只读；写入接口（add/remove）仅改动 llm-pi-ai
- *     的 providers.bailian.models，且经 settings.mutate 的结构化写入完成。
+ *   - 每个路由先过 connection.requestRejection 的 Host/Origin 栅栏，
+ *     挡掉 DNS rebinding 与跨站调用；
+ *   - 读取接口（list/usage）只读；写入接口（add/remove）仅改动
+ *     llm-pi-ai 中目标 provider 的 models，且经 settings.mutate 结构化写入。
+ *
+ * 默认端点指向**公共** DashScope 兼容端点，不指向任何个人空间域名；
+ * 使用百炼专属空间（MaaS 网关）时由用户通过 config.baseURL 覆盖。
  *
  * @module index.js
  */
@@ -19,14 +24,18 @@ export const name = 'bailian-catalog'
 // credentials：读取百炼密钥；llm：官方模型发现机制（内部自带 fetch 与 Bearer 鉴权）。
 export const inject = ['credentials', 'llm']
 
-/** 默认探测端点：当前 profile 中 llm-pi-ai 配置的百炼 MaaS 网关。 */
-const DEFAULT_BASE_URL = 'https://llm-jxcqbxy7kpl3xtjb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
+/** 默认探测端点：公共 DashScope OpenAI 兼容端点（不指向任何个人空间）。 */
+const DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 
-/** 凭证引用名。credentials 服务会依次查托管存储、进程环境与 .env。 */
-const CRED_REF = 'BAILIAN_API_KEY'
+/** 默认凭证引用名。credentials 服务会依次查托管存储、进程环境与 .env。 */
+const DEFAULT_CRED_REF = 'BAILIAN_API_KEY'
+
+/** 默认写入的目标 provider（llm-pi-ai 的 providers 键）。 */
+const DEFAULT_PROVIDER = 'bailian'
 
 /** llm-pi-ai 注册模型发现所用的 settings 命名空间。 */
 const SETTINGS_NS = 'llm-pi-ai'
+
 
 /**
  * 内置模型家族规则表（有序，先匹配先生效）。
@@ -96,7 +105,12 @@ function parseFamilyRules(raw) {
  * @param {{ baseURL?: string, families?: Array<{ pattern: string, family: string }> }} [config]
  */
 export function apply(ctx, config) {
-  const baseURL = (config && typeof config.baseURL === 'string' && config.baseURL) || DEFAULT_BASE_URL
+  const baseURL = (config && typeof config.baseURL === 'string' && config.baseURL.trim()) || DEFAULT_BASE_URL
+
+  // provider 与凭证变量名均可配置：别人的 provider 未必叫 bailian，密钥变量也未必同名。
+  const providerName =
+    (config && typeof config.provider === 'string' && config.provider.trim()) || DEFAULT_PROVIDER
+  const credRef = (config && typeof config.apiKeyEnv === 'string' && config.apiKeyEnv.trim()) || DEFAULT_CRED_REF
 
   // 自定义规则先匹配，内置规则兜底：这样用户能把某个模型从内置家族里改归别处。
   const { rules: customRules, warnings: familyWarnings } = parseFamilyRules(config && config.families)
@@ -116,10 +130,10 @@ export function apply(ctx, config) {
 
   /** 拉取百炼全量模型；失败时抛错，由路由转成 JSON 错误。 */
   async function listModels() {
-    const hit = await ctx.credentials.resolve(CRED_REF)
+    const hit = await ctx.credentials.resolve(credRef)
     const apiKey = hit && typeof hit.value === 'string' ? hit.value : undefined
     if (!apiKey) {
-      throw new Error('凭证库中未找到 ' + CRED_REF + '，请先在 设置 → 模型 里填写百炼 API Key')
+      throw new Error('凭证库中未找到 ' + credRef + '，请先在 设置 → 模型 里填写百炼 API Key，或用 config.apiKeyEnv 指定别的变量名')
     }
 
     // 官方发现机制：内部请求 `${baseURL}/models` 并携带 Authorization: Bearer。
@@ -280,7 +294,7 @@ export function apply(ctx, config) {
     }
   }
 
-  /** 读取 llm-pi-ai 当前百炼 provider 的配置描述与模型数组。 */
+  /** 读取 llm-pi-ai 中目标 provider 的配置描述与模型数组。 */
   function readProviderModels() {
     const settings = ctx.get('settings')
     if (settings === undefined) throw new Error('settings 服务不可用')
@@ -289,17 +303,20 @@ export function apply(ctx, config) {
       descriptors.find((descriptor) => String(descriptor.ns) === SETTINGS_NS) ||
       descriptors.find((descriptor) => {
         const value = descriptor && descriptor.value
-        return value && typeof value === 'object' && value.providers && value.providers.bailian
+        return value && typeof value === 'object' && value.providers && value.providers[providerName]
       })
-    if (!target) throw new Error('未找到 llm-pi-ai 的百炼 provider 配置')
+    if (!target) throw new Error('未找到 llm-pi-ai 的 provider 配置：' + providerName)
     const value = target.value && typeof target.value === 'object' ? target.value : {}
-    const provider = value.providers && value.providers.bailian && typeof value.providers.bailian === 'object' ? value.providers.bailian : {}
+    const provider =
+      value.providers && value.providers[providerName] && typeof value.providers[providerName] === 'object'
+        ? value.providers[providerName]
+        : {}
     const models = Array.isArray(provider.models) ? provider.models.slice() : []
     return { settings, target, models }
   }
 
   /**
-   * 把一个模型 id 追加进 llm-pi-ai 的百炼 provider 配置。
+   * 把一个模型 id 追加进目标 provider 配置。
    * 走 settings 服务的结构化写入（profile 补丁），不直接改 YAML 文本。
    * 幂等：已存在则返回 already。回滚：'remove' 动作。
    */
@@ -309,19 +326,19 @@ export function apply(ctx, config) {
     if (!id) throw new Error('缺少模型 ID')
 
     if (models.some((model) => model && String(model.id) === id)) {
-      return { added: false, already: true, model: id, total: models.length }
+      return { added: false, already: true, model: id, total: models.length, provider: providerName }
     }
 
     const next = models.concat([{ id, name: id }])
     await settings.mutate(
       String(target.ns),
-      [{ op: 'set', path: ['providers', 'bailian', 'models'], value: next }],
+      [{ op: 'set', path: ['providers', providerName, 'models'], value: next }],
       target.revision,
     )
-    return { added: true, model: id, total: next.length }
+    return { added: true, model: id, total: next.length, provider: providerName }
   }
 
-  /** 从百炼 provider 配置中移除一个模型（加入的回滚路径）。 */
+  /** 从目标 provider 配置中移除一个模型（加入的回滚路径）。 */
   async function removeModel(modelId) {
     const { settings, target, models } = readProviderModels()
     const id = String(modelId || '').trim()
@@ -329,14 +346,14 @@ export function apply(ctx, config) {
 
     const next = models.filter((model) => !(model && String(model.id) === id))
     if (next.length === models.length) {
-      return { removed: false, missing: true, model: id, total: models.length }
+      return { removed: false, missing: true, model: id, total: models.length, provider: providerName }
     }
     await settings.mutate(
       String(target.ns),
-      [{ op: 'set', path: ['providers', 'bailian', 'models'], value: next }],
+      [{ op: 'set', path: ['providers', providerName, 'models'], value: next }],
       target.revision,
     )
-    return { removed: true, model: id, total: next.length }
+    return { removed: true, model: id, total: next.length, provider: providerName }
   }
 
   // webServer 在插件 apply 阶段可能尚未发布，用 ctx.inject 等待服务就绪；
@@ -347,12 +364,29 @@ export function apply(ctx, config) {
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
       res.end(JSON.stringify(payload))
     }
+
+    /**
+     * 每个路由先过 connection 服务的信任栅栏：它的 Host/Origin 校验挡 DNS
+     * rebinding 与跨站调用，浏览器登录态则拦下未认证调用者。
+     * 返回 true 表示已拒绝并结束响应。
+     */
+    const rejected = (req, res) => {
+      const connection = ctx.get('connection')
+      if (connection === undefined || typeof connection.requestRejection !== 'function') return false
+      const rejection = connection.requestRejection(req)
+      if (rejection === undefined) return false
+      res.writeHead(rejection, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ error: 'request rejected' }))
+      return true
+    }
+
     scoped.effect(
       () =>
         server.register({
           kind: 'exact',
           path: '/api/bailian-catalog/list',
           handler: async (req, res) => {
+            if (rejected(req, res)) return
             try {
               sendJson(res, 200, await listModels())
             } catch (err) {
@@ -368,6 +402,7 @@ export function apply(ctx, config) {
           kind: 'exact',
           path: '/api/bailian-catalog/usage',
           handler: async (req, res) => {
+            if (rejected(req, res)) return
             try {
               sendJson(res, 200, await usageReport())
             } catch (err) {
@@ -383,6 +418,7 @@ export function apply(ctx, config) {
           kind: 'exact',
           path: '/api/bailian-catalog/add',
           handler: async (req, res) => {
+            if (rejected(req, res)) return
             if (String(req.method || 'GET').toUpperCase() !== 'POST') {
               sendJson(res, 405, { error: 'method not allowed' })
               return
@@ -402,6 +438,7 @@ export function apply(ctx, config) {
           kind: 'exact',
           path: '/api/bailian-catalog/remove',
           handler: async (req, res) => {
+            if (rejected(req, res)) return
             if (String(req.method || 'GET').toUpperCase() !== 'POST') {
               sendJson(res, 405, { error: 'method not allowed' })
               return

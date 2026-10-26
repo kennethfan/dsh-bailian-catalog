@@ -61,19 +61,30 @@ dsh plugin --profile <profile> add link:/path/to/dsh-bailian-catalog
 
 The host half needs a `dsh` process restart before its routes exist; the browser half appears after a page refresh.
 
+## Prerequisites
+
+You need your own Bailian (DashScope / Model Studio) API key, and — if you use a dedicated Model Studio workspace — that workspace's MaaS gateway URL. This plugin ships **no** credential and points at **no** private workspace: the default endpoint is the public DashScope compatible endpoint.
+
 ## Configuration
 
-The `cordis.patch.yml` row can override the probed endpoint:
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `baseURL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Endpoint to enumerate. Point it at your workspace's MaaS gateway when you use a dedicated Bailian space. |
+| `provider` | `bailian` | The `llm-pi-ai` provider key that add/remove writes to. |
+| `apiKeyEnv` | `BAILIAN_API_KEY` | Credential reference resolved through the `credentials` service. |
+| `families` | `[]` | Extra family rules (see below). |
 
 ```yaml
 - insert:
     - id: bailian-catalog
       name: 'dsh-bailian-catalog'
       config:
-        baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
+        baseURL: https://llm-<your-workspace>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+        provider: bailian
+        apiKeyEnv: BAILIAN_API_KEY
 ```
 
-The default is the Bailian MaaS gateway configured for `llm-pi-ai` in the profile; the public endpoint works too (both returned identical bodies when tested).
+A workspace gateway returns the same body shape as the public endpoint; it simply sees whatever models your key is entitled to.
 
 ### Custom family rules
 

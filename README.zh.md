@@ -73,7 +73,13 @@
 
 ## 安装
 
-从 GitHub：
+从预构建 tarball 安装（无构建步骤，也不会弹构建授权）：
+
+```sh
+dsh plugin --profile <profile> add https://github.com/kennethfan/dsh-bailian-catalog/releases/download/v0.2.0/dsh-bailian-catalog-0.2.0.tgz
+```
+
+从源码安装：
 
 ```sh
 dsh plugin --profile <profile> add github:kennethfan/dsh-bailian-catalog

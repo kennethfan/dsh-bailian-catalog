@@ -73,7 +73,13 @@ A Bailian `sk-` key has **no** balance or quota endpoint (the usual paths — `/
 
 ## Install
 
-From GitHub:
+From the prebuilt tarball (no build step, no build-approval prompt):
+
+```sh
+dsh plugin --profile <profile> add https://github.com/kennethfan/dsh-bailian-catalog/releases/download/v0.2.0/dsh-bailian-catalog-0.2.0.tgz
+```
+
+From source:
 
 ```sh
 dsh plugin --profile <profile> add github:kennethfan/dsh-bailian-catalog
